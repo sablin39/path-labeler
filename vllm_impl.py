@@ -205,16 +205,25 @@ class CaptionEvaluator:
             batch_outputs = self.model.generate(batch_inputs, sampling_params)
             all_outputs.extend(batch_outputs)
         
-        pbar_metrics = tqdm(range(len(all_outputs)), desc="Calculating metrics")
-        for i in pbar_metrics:
-            generated_output = all_outputs[i]
-            # Ensure there's at least one output in the list for this request
+        # Extract all captions before deleting the model
+        all_captions = []
+        for i, generated_output in enumerate(all_outputs):
             if generated_output.outputs:
                 caption = generated_output.outputs[0].text.strip()
             else:
-                caption = "" # Or handle as an error/empty prediction
+                caption = ""
                 print(f"Warning: No output generated for input index {i}")
-
+            all_captions.append(caption)
+        
+        # Delete the model to free up GPU memory before metrics calculation
+        print("Deleting VLM model to free up GPU memory...")
+        del self.model
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        
+        pbar_metrics = tqdm(range(len(all_captions)), desc="Calculating metrics")
+        for i in pbar_metrics:
+            caption = all_captions[i]
             gt_caption = all_ground_truths[i]
             
             # Assuming results keys are 0-indexed integers corresponding to the order in image_dict
