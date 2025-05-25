@@ -1,5 +1,7 @@
 # Caption & Detection Experiment
 
+[2025.05.20] Added `vllm` implementation. CLI args remain the same.
+
 ## Motivation
 
 A fixed class detection is challenging for detecting facilities with diversity and complexity. In order to conduct successfull detections we may try to detect related objects of the facility. (e.g. Detect the handrail instead of ramp itself). 
