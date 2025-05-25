@@ -50,7 +50,7 @@ What related facilities do you find in the image?
 
 
 class CaptionEvaluator:
-    def __init__(self, model_id="Qwen/Qwen2.5-VL-3B-Instruct",
+    def __init__(self, model_id="Qwen/Qwen2.5-VL-3B-Instruct", batch_size=4
     ):
         if "Qwen2.5" in model_id:
             self.model=LLM(model=model_id,
@@ -59,6 +59,7 @@ class CaptionEvaluator:
                            limit_mm_per_prompt={"image": 1},
                         )
             self.processor = AutoProcessor.from_pretrained(model_id, use_fast=True)
+            self.batch_size = batch_size
         else:
             # Fallback or error for unsupported models
             raise ValueError(f"Unsupported model_id for this script: {model_id}. Only Qwen2.5-VL models are supported.")
@@ -167,10 +168,10 @@ class CaptionEvaluator:
             stop_token_ids=self.processor.tokenizer.convert_tokens_to_ids(["<|endoftext|>", "<|im_end|>"]) if hasattr(self.processor, 'tokenizer') else [],
         )
 
-        batched_llm_inputs = []
-        ground_truths_in_order = []
+        all_llm_inputs = []
+        all_ground_truths = []
 
-        pbar_prepare = tqdm(queries_data, desc="Preparing batched inputs")
+        pbar_prepare = tqdm(queries_data, desc="Preparing all inputs")
         for query_data_item in pbar_prepare:
             text, image_inputs, video_inputs, gt_caption, video_kwargs = query_data_item
             
@@ -184,18 +185,25 @@ class CaptionEvaluator:
                 "multi_modal_data": mm_data,
                 "mm_processor_kwargs": video_kwargs,
             }
-            batched_llm_inputs.append(llm_input_item)
-            ground_truths_in_order.append(gt_caption)
+            all_llm_inputs.append(llm_input_item)
+            all_ground_truths.append(gt_caption)
 
-        # Generate for all inputs in one batch
-        if not batched_llm_inputs:
+        if not all_llm_inputs:
             print("No inputs to process.")
             return results
 
-        pbar_generate = tqdm(desc="Generating captions with vLLM (batched)", total=1)
-        all_outputs = self.model.generate(batched_llm_inputs, sampling_params)
-        pbar_generate.update(1)
-        pbar_generate.close()
+        # Process in batches to avoid OOM
+        all_outputs = []
+        total_batches = (len(all_llm_inputs) + self.batch_size - 1) // self.batch_size
+        
+        pbar_generate = tqdm(range(total_batches), desc=f"Generating captions (batch_size={self.batch_size})")
+        for batch_idx in pbar_generate:
+            start_idx = batch_idx * self.batch_size
+            end_idx = min(start_idx + self.batch_size, len(all_llm_inputs))
+            
+            batch_inputs = all_llm_inputs[start_idx:end_idx]
+            batch_outputs = self.model.generate(batch_inputs, sampling_params)
+            all_outputs.extend(batch_outputs)
         
         pbar_metrics = tqdm(range(len(all_outputs)), desc="Calculating metrics")
         for i in pbar_metrics:
@@ -207,13 +215,13 @@ class CaptionEvaluator:
                 caption = "" # Or handle as an error/empty prediction
                 print(f"Warning: No output generated for input index {i}")
 
-            gt_caption = ground_truths_in_order[i]
+            gt_caption = all_ground_truths[i]
             
             # Assuming results keys are 0-indexed integers corresponding to the order in image_dict
             results[i] = self.calc_metrics(caption.split(", "), gt_caption)
             
         return results
-
+    
     def evaluate_paligemma_chat(self, image_dict):
 
         return
@@ -235,9 +243,9 @@ def main(args):
     #     json.dump(results, f, indent=4)
     
     evaluator=CaptionEvaluator(
-        model_id
+        model_id,
+        batch_size=args.batch_size
     )
-    # results = evaluator.evaluate_model(image_dict)
     results = evaluator.evaluate_chat_model(image_dict)
     with open(f"{model_id.split('/')[-1]}_caption_results_{args.run_name}.json", "w") as f:
         json.dump(results, f, indent=4)
@@ -251,5 +259,6 @@ if __name__ == "__main__":
     parser.add_argument("--model_id", default="Qwen/Qwen2.5-VL-3B-Instruct")
     parser.add_argument("--image_dict_path", default="filtered_images_test_labeled.json")
     parser.add_argument("--run_name", default="Name to save results", required=True)
+    parser.add_argument("--batch_size", type=int, default=4, help="Batch size for processing inputs")
     args = parser.parse_args()
     main(args)
